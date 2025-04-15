@@ -1,0 +1,335 @@
+import { useState, useEffect } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { getPrayerTimesForCurrentLocation, getPrayerTimesByLocation, getCurrentAndNextPrayer } from '@/services/prayerService';
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { formatTime } from '@/lib/date';
+import { Geolocation } from "@capacitor/geolocation";
+
+export default function PrayerTimes() {
+  const [location, setLocation] = useState<string>('');
+  const [customLocation, setCustomLocation] = useState<string>('');
+  const [coordinates, setCoordinates] = useState<{ latitude: number, longitude: number } | null>(null);
+  const [calculationMethod, setCalculationMethod] = useState<string>('MWL');
+  const [activeTab, setActiveTab] = useState('current');
+  const [error, setError] = useState<string | null>(null);
+
+  // Get prayer times for current location
+  const { 
+    data: currentLocationPrayerTimes, 
+    isLoading: isLoadingCurrentLocation,
+    error: currentLocationError,
+    refetch: refetchCurrentLocation
+  } = useQuery({
+    queryKey: ['/api/prayer-times/current'],
+    queryFn: () => getPrayerTimesForCurrentLocation(),
+    enabled: activeTab === 'current',
+    retry: false
+  });
+
+  // Get prayer times for custom location
+  const { 
+    data: customLocationPrayerTimes, 
+    isLoading: isLoadingCustomLocation,
+    error: customLocationError,
+    refetch: refetchCustomLocation
+  } = useQuery({
+    queryKey: ['/api/prayer-times/location', location],
+    queryFn: () => getPrayerTimesByLocation(location),
+    enabled: !!location && activeTab === 'custom',
+    retry: false
+  });
+
+  const handleLocationSearch = () => {
+    if (customLocation.trim()) {
+      setLocation(customLocation);
+    }
+  };
+
+  const handleMethodChange = (value: string) => {
+    setCalculationMethod(value);
+    // We would need to refetch with the new calculation method
+  };
+
+  // Determine which data to use based on active tab
+  const prayerTimesData = activeTab === 'current' ? currentLocationPrayerTimes : customLocationPrayerTimes;
+  const isLoading = activeTab === 'current' ? isLoadingCurrentLocation : isLoadingCustomLocation;
+
+  // Format prayer times for display with improved formatting for Arabic names
+  const formatPrayerTimes = (data: any) => {
+    if (!data || !data.prayerTimes) return [];
+
+    const prayerTimes = data.prayerTimes;
+
+    return [
+      { name: 'Fajr', time: formatTime(prayerTimes.fajr), arabicName: 'الفجر' },
+      { name: 'Sunrise', time: formatTime(prayerTimes.sunrise), arabicName: 'الشروق' },
+      { name: 'Dhuhr', time: formatTime(prayerTimes.dhuhr), arabicName: 'الظهر' },
+      { name: 'Asr', time: formatTime(prayerTimes.asr), arabicName: 'العصر' },
+      { name: 'Maghrib', time: formatTime(prayerTimes.maghrib), arabicName: 'المغرب' },
+      { name: 'Isha', time: formatTime(prayerTimes.isha), arabicName: 'العشاء' }
+    ];
+  };
+
+  // Current and next prayer
+  const getCurrentPrayerInfo = () => {
+    if (!coordinates) return null;
+    
+    try {
+      const { currentPrayer, nextPrayer, currentPrayerTime, nextPrayerTime } = 
+        getCurrentAndNextPrayer(coordinates.latitude, coordinates.longitude);
+      
+      return {
+        currentPrayer,
+        nextPrayer,
+        currentPrayerTime: formatTime(currentPrayerTime),
+        nextPrayerTime: formatTime(nextPrayerTime),
+        timeUntilNext: getTimeUntilNextPrayer(nextPrayerTime)
+      };
+    } catch (error) {
+      console.error('Error calculating current prayer:', error);
+      return null;
+    }
+  };
+
+  // Calculate time until next prayer
+  const getTimeUntilNextPrayer = (nextPrayerTime: Date) => {
+    const now = new Date();
+    const diffMs = nextPrayerTime.getTime() - now.getTime();
+    const diffHrs = Math.floor(diffMs / (1000 * 60 * 60));
+    const diffMins = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+    
+    return `${diffHrs}h ${diffMins}m`;
+  };
+
+  // Get user's coordinates when component mounts
+  useEffect(() => {
+    async function fetchLocation() {
+      try {
+        // Request permission and get current position
+        await Geolocation.requestPermissions();
+        const position = await Geolocation.getCurrentPosition();
+        setCoordinates({
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+        });
+        setError(null);
+      } catch (err: any) {
+        setError("Location permission is required for prayer times.");
+      }
+    }
+    fetchLocation();
+  }, []);
+
+  const formattedPrayerTimes = formatPrayerTimes(prayerTimesData);
+  const currentPrayerInfo = coordinates ? getCurrentPrayerInfo() : null;
+
+  return (
+    <div className="container py-6">
+      <h1 className="text-3xl font-bold mb-6">Prayer Times</h1>
+      
+      <Tabs defaultValue="current" className="w-full" onValueChange={setActiveTab}>
+        <TabsList className="grid grid-cols-2 w-full max-w-md mx-auto mb-6">
+          <TabsTrigger value="current">Current Location</TabsTrigger>
+          <TabsTrigger value="custom">Custom Location</TabsTrigger>
+        </TabsList>
+        
+        <TabsContent value="current" className="mt-6">
+          <div className="flex flex-col space-y-6">
+            {currentLocationError ? (
+              <Alert variant="destructive">
+                <AlertTitle>Location Error</AlertTitle>
+                <AlertDescription>
+                  We couldn't access your location. Please allow location access in your browser or use the Custom Location tab.
+                </AlertDescription>
+              </Alert>
+            ) : (
+              <>
+                {/* Current/Next Prayer Card - Now with default styling (no special background) */}
+                {currentPrayerInfo && (
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>Current Prayer</CardTitle>
+                      <CardDescription>Based on your location</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="text-center p-4 bg-white rounded-lg shadow-sm">
+                            <p className="text-lg font-bold text-gray-500">Current Prayer</p>
+                            <h3 className="text-3xl font-bold text-black capitalize">
+                            {currentPrayerInfo.currentPrayer}
+                          </h3>
+                          <p className="text-sm text-black">{currentPrayerInfo.currentPrayerTime}</p>
+                        </div>
+                        <div className="text-center p-4 bg-white rounded-lg shadow-sm">
+                          <p className="text-lg font-bold text-gray-500">Next Prayer</p>
+                          <h3 className="text-3xl font-bold text-black capitalize">
+                            {currentPrayerInfo.nextPrayer}
+                          </h3>
+                          <p className="text-sm text-black">{currentPrayerInfo.nextPrayerTime}</p>
+                          <p className="text-xs mt-1 text-black">In {currentPrayerInfo.timeUntilNext}</p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+              
+                {/* All Prayer Times */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Prayer Times</CardTitle>
+                    <CardDescription>
+                      {isLoading ? 'Loading...' : 'Today\'s prayer times for your current location'}
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {isLoading ? (
+                      <div className="space-y-4">
+                        {[...Array(6)].map((_, i) => (
+                          <div key={i} className="flex justify-between items-center">
+                            <Skeleton className="h-6 w-20" />
+                            <Skeleton className="h-6 w-16" />
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        {formattedPrayerTimes.map((prayer) => (
+                          <div key={prayer.name} className="flex justify-between items-center border-b pb-2 last:border-0 last:pb-0">
+                            <div className="flex flex-col">
+                              <span className="text-primary-700 font-medium">{prayer.name}</span>
+                              <span className="text-lg mt-1 font-medium text-gray-600 arabic-text">{prayer.arabicName}</span>
+                            </div>
+                            <span className="font-mono text-gray-700">{prayer.time}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                  <CardFooter className="flex justify-between">
+                    <div className="text-sm text-gray-500">
+                      Using {calculationMethod} calculation method
+                    </div>
+                    <Select defaultValue={calculationMethod} onValueChange={handleMethodChange}>
+                      <SelectTrigger className="w-[180px]">
+                        <SelectValue placeholder="Calculation Method" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="MWL">Muslim World League</SelectItem>
+                        <SelectItem value="ISNA">ISNA (North America)</SelectItem>
+                        <SelectItem value="Egypt">Egyptian General Authority</SelectItem>
+                        <SelectItem value="Makkah">Umm Al-Qura (Makkah)</SelectItem>
+                        <SelectItem value="Karachi">University of Islamic Sciences, Karachi</SelectItem>
+                        <SelectItem value="Tehran">Institute of Geophysics, Tehran</SelectItem>
+                        <SelectItem value="Jafari">Shia Ithna-Ashari, Leva Institute, Qum</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </CardFooter>
+                </Card>
+              </>
+            )}
+            
+            <div className="text-center">
+              <Button
+                onClick={() => refetchCurrentLocation()}
+                disabled={isLoadingCurrentLocation}
+                variant="outline"
+              >
+                Refresh Prayer Times
+              </Button>
+            </div>
+          </div>
+        </TabsContent>
+        
+        <TabsContent value="custom" className="mt-6">
+          <div className="flex flex-col space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>Custom Location</CardTitle>
+                <CardDescription>Enter a city or address to get prayer times</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="flex gap-2">
+                  <Input
+                    placeholder="City, Country (e.g., London, UK)"
+                    value={customLocation}
+                    onChange={(e) => setCustomLocation(e.target.value)}
+                    className="flex-1"
+                  />
+                  <Button onClick={handleLocationSearch} disabled={!customLocation.trim() || isLoadingCustomLocation}>
+                    Search
+                  </Button>
+                </div>
+                
+                {customLocationError && (
+                  <div className="mt-4 text-sm text-red-500">
+                    Unable to find prayer times for this location. Please try another location.
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+            
+            {location && (
+              <Card>
+                <CardHeader>
+                  <CardTitle>Prayer Times for {location}</CardTitle>
+                  <CardDescription>
+                    {isLoading ? 'Loading...' : 'Today\'s prayer times'}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {isLoading ? (
+                    <div className="space-y-4">
+                      {[...Array(6)].map((_, i) => (
+                        <div key={i} className="flex justify-between items-center">
+                          <Skeleton className="h-6 w-20" />
+                          <Skeleton className="h-6 w-16" />
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {formattedPrayerTimes.map((prayer) => (
+                          <div key={prayer.name} className="flex justify-between items-center border-b pb-2 last:border-0 last:pb-0">
+                            <div className="flex flex-col">
+                              <span className="text-primary-700 font-medium">{prayer.name}</span>
+                              <span className="text-lg mt-1 font-medium text-gray-600 arabic-text">{prayer.arabicName}</span>
+                            </div>
+                            <span className="font-mono text-gray-700">{prayer.time}</span>
+                          </div>
+                      ))}
+                    </div>
+                  )}
+                </CardContent>
+                <CardFooter className="flex justify-between">
+                  <div className="text-sm text-gray-500">
+                    Using {calculationMethod} calculation method
+                  </div>
+                  <Select defaultValue={calculationMethod} onValueChange={handleMethodChange}>
+                    <SelectTrigger className="w-[180px]">
+                      <SelectValue placeholder="Calculation Method" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="MWL">Muslim World League</SelectItem>
+                      <SelectItem value="ISNA">ISNA (North America)</SelectItem>
+                      <SelectItem value="Egypt">Egyptian General Authority</SelectItem>
+                      <SelectItem value="Makkah">Umm Al-Qura (Makkah)</SelectItem>
+                      <SelectItem value="Karachi">University of Islamic Sciences, Karachi</SelectItem>
+                      <SelectItem value="Tehran">Institute of Geophysics, Tehran</SelectItem>
+                      <SelectItem value="Jafari">Shia Ithna-Ashari, Leva Institute, Qum</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </CardFooter>
+              </Card>
+            )}
+          </div>
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
